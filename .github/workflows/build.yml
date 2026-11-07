@@ -127,7 +127,7 @@ jobs:
             cat pack.log
             echo "::error title=$DEVICE::$(tail -n 4 pack.log | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g' -e 's/\r//g' -e 's/\n/%0A/g')"
             echo "::error title=$DEVICE sizes::$(stat -c '%n %s' tools/skyward stock/recovery.img | tr '\n' ' ')"
-            echo "::error title=$DEVICE ramdisk::$(tools/skyward-pack list stock/recovery.img | sort -k4 -n -r | head -40 | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g' -e 's/\n/%0A/g')"
+            echo "::error title=$DEVICE ramdisk::$(tools/skyward-pack list stock/recovery.img | sort -k3 -n -r | head -40 | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g' -e 's/\n/%0A/g')"
             exit 1
           }
           cat pack.log
