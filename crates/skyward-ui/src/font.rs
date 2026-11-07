@@ -2,6 +2,7 @@ use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, VariableFont};
 use anyhow::{anyhow, Result};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -244,7 +245,16 @@ impl FontInfo {
 
 /// Read a font file for the life of the process: the faces borrow its bytes.
 fn leak(path: &Path) -> Result<&'static [u8]> {
-    let bytes = std::fs::read(path).map_err(|e| anyhow!("read font {}: {e}", path.display()))?;
+    let mut bytes = std::fs::read(path).map_err(|e| anyhow!("read font {}: {e}", path.display()))?;
+    // A ramdisk keeps a typeface packed, for the room a recovery partition
+    // has; a file that is not packed is taken as it is.
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut raw)
+            .map_err(|e| anyhow!("unpack font {}: {e}", path.display()))?;
+        bytes = raw;
+    }
     Ok(Box::leak(bytes.into_boxed_slice()))
 }
 

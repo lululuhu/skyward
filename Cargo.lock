@@ -2471,6 +2471,7 @@ dependencies = [
  "anyhow",
  "drm",
  "drm-ffi",
+ "flate2",
  "icu_locale_core",
  "jiff",
  "libc",

@@ -124,8 +124,11 @@ fn main() -> Result<()> {
                 rd.link(command, recovery)?;
             }
             rd.add(paths::CONFIG, 0o644, read(&config)?)?;
-            rd.add(paths::FONT, 0o644, read(&font)?)?;
-            rd.add(paths::MONO, 0o644, read(&mono)?)?;
+            // Typefaces are the bulk of what is added to a stock ramdisk, and
+            // a recovery partition can be small; they go in packed, and the
+            // UI unpacks them as it reads them.
+            rd.add(paths::FONT, 0o644, gzip(&read(&font)?)?)?;
+            rd.add(paths::MONO, 0o644, gzip(&read(&mono)?)?)?;
             rd.add(paths::MONO_LICENSE, 0o644, read(&mono_license)?)?;
             // A stock ramdisk may run logd without any scheduling profiles,
             // and logd stops as soon as it cannot find the one it asks for.
@@ -221,6 +224,15 @@ fn take_stock_image(stock: &skyward_config::Stock, out: &Path) -> Result<()> {
     std::fs::rename(&at, out).with_context(|| format!("move {} to {}", at.display(), out.display()))?;
     println!("wrote {} ({} bytes), its SHA-256 the one the configuration names", out.display(), bytes.len());
     Ok(())
+}
+
+/// `data` packed, which a typeface goes into a ramdisk as.
+fn gzip(data: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut encoder = flate2::write::GzEncoder::new(&mut out, flate2::Compression::best());
+    encoder.write_all(data).context("pack the typeface")?;
+    encoder.finish().context("pack the typeface")?;
+    Ok(out)
 }
 
 /// The size of the partition `stock` fills: all of it, as the phone and a
