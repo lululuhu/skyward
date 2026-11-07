@@ -123,14 +123,7 @@ jobs:
           mkdir out
           tools/skyward-pack recovery --stock stock/recovery.img --binary tools/skyward --config "devices/$DEVICE.toml" \
             --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
-            --mono-license resources/fonts/KirkMono-OFL.txt --out "out/$name.img" >pack.log 2>&1 || {
-            cat pack.log
-            echo "::error title=$DEVICE::$(tail -n 4 pack.log | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g' -e 's/\r//g' -e 's/\n/%0A/g')"
-            echo "::error title=$DEVICE sizes::$(stat -c '%n %s' tools/skyward stock/recovery.img | tr '\n' ' ')"
-            echo "::error title=$DEVICE ramdisk::$(tools/skyward-pack list stock/recovery.img | sort -k3 -n -r | head -40 | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g' -e 's/\n/%0A/g')"
-            exit 1
-          }
-          cat pack.log
+            --mono-license resources/fonts/KirkMono-OFL.txt --out "out/$name.img"
           echo "name=$name" >> "$GITHUB_OUTPUT"
       # The image is the whole partition, flashed as it is, and most of it
       # is the room the recovery leaves empty; it is handed out zipped.
