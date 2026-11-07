@@ -417,7 +417,9 @@ fn main() -> Result<()> {
 }
 
 fn booted_slot() -> Result<skyward_vab::Slot> {
-    skyward_vab::current_slot()?.context("not an A/B device")
+    // A recovery the bootloader starts without a slot suffix runs on a phone
+    // that is not A/B: its one copy of each partition is slot A's.
+    Ok(skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A))
 }
 
 fn lp(super_dev: &Path, slot: Option<u32>) -> Result<()> {

@@ -5,6 +5,7 @@ use skyward_config::ramdisk as paths;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 mod avb;
 mod image;
@@ -167,6 +168,9 @@ const RECOVERY: &str = "recovery";
 /// on its server, reading only what that partition takes of it, and write it
 /// to `out` once its SHA-256 is the one the configuration names.
 fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> {
+    if !stock.package.ends_with(".zip") {
+        return take_stock_image(stock, out);
+    }
     let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
     // Taken out beside where it goes, so it is moved there whole.
@@ -188,6 +192,34 @@ fn take_stock_recovery(stock: &skyward_config::Stock, out: &Path) -> Result<()> 
     ensure!(sum == stock.recovery, "the {RECOVERY} partition in {} has the SHA-256 {sum}, where the configuration names {}", stock.package, stock.recovery);
     std::fs::rename(&image.path, out).with_context(|| format!("move {} to {}", image.path.display(), out.display()))?;
     println!("wrote {} ({} bytes), its SHA-256 the one the configuration names", out.display(), image.size);
+    Ok(())
+}
+
+/// Download a stock recovery image that stands on its server whole, and write
+/// it to `out` once its SHA-256 is the one the configuration names.
+fn take_stock_image(stock: &skyward_config::Stock, out: &Path) -> Result<()> {
+    let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| format!("make {}", parent.display()))?;
+    let work = tempfile::Builder::new().prefix(".stock").tempdir_in(parent).with_context(|| format!("make a folder in {}", parent.display()))?;
+    let at = work.path().join("recovery.img");
+    println!("taking {} from {}", RECOVERY, stock.package);
+    let status = Command::new("curl")
+        .args(["-fL", "--retry", "3", "--output"])
+        .arg(&at)
+        .arg(&stock.package)
+        .status()
+        .context("run curl (install it, or take the image by hand)")?;
+    ensure!(status.success(), "curl exited with {status}");
+    let bytes = std::fs::read(&at).with_context(|| format!("read {}", at.display()))?;
+    let sum: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    ensure!(
+        sum == stock.recovery,
+        "the {RECOVERY} image at {} has the SHA-256 {sum}, where the configuration names {}",
+        stock.package,
+        stock.recovery
+    );
+    std::fs::rename(&at, out).with_context(|| format!("move {} to {}", at.display(), out.display()))?;
+    println!("wrote {} ({} bytes), its SHA-256 the one the configuration names", out.display(), bytes.len());
     Ok(())
 }
 
@@ -260,7 +292,7 @@ fn list(image: &Path) -> Result<()> {
         h.header_version(),
         img.kernel.len(),
         img.ramdisk.len(),
-        h.osversionpatch
+        h.osversionpatch()
     );
     if img.ramdisk.is_empty() {
         return Ok(());

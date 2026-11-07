@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use cpio::{NewcBuilder, NewcReader};
+use flate2::read::GzDecoder;
 use std::io::{Cursor, Read, Write};
-use std::process::{Command, Stdio};
 
 /// One cpio entry with the metadata the kernel restores when it unpacks the
 /// archive into rootfs.
@@ -27,6 +27,12 @@ const S_IFLNK: u32 = 0o120000;
 /// in system/bin that stand for toybox.
 const LINK_MODE: u32 = 0o755;
 
+/// LZ4's legacy framing, the one the kernel's initramfs unpacker reads: a
+/// magic, then blocks of at most eight megabytes, each of those preceded by
+/// its compressed size.
+const LZ4_MAGIC: u32 = 0x184C_2102;
+const LZ4_BLOCK: usize = 8 * 1024 * 1024;
+
 impl Entry {
     pub fn is_dir(&self) -> bool {
         self.mode & S_IFMT == S_IFDIR
@@ -40,11 +46,17 @@ pub struct Ramdisk {
 }
 
 impl Ramdisk {
-    /// Unpack an LZ4 (legacy framing) compressed newc archive, as Android
-    /// boot images carry.
+    /// Unpack a newc archive compressed either with gzip, as version 0 to 2
+    /// boot images carry it, or with LZ4 in the legacy framing the kernel
+    /// reads.
     pub fn decode(compressed: &[u8]) -> Result<Self> {
-        let mut cpio = Vec::new();
-        lz4_flex::frame::FrameDecoder::new(compressed).read_to_end(&mut cpio).context("lz4 decode")?;
+        let cpio = if compressed.starts_with(&[0x1f, 0x8b]) {
+            let mut out = Vec::new();
+            GzDecoder::new(compressed).read_to_end(&mut out).context("gzip decode")?;
+            out
+        } else {
+            lz4_legacy_decode(compressed)?
+        };
         let mut entries = Vec::new();
         let mut rest = Cursor::new(cpio.as_slice());
         loop {
@@ -72,8 +84,8 @@ impl Ramdisk {
     }
 
     /// Pack as a newc archive compressed the way AOSP packs boot ramdisks,
-    /// with the reference `lz4` tool in legacy framing (the kernel's initramfs
-    /// unpacker reads no other LZ4 framing).
+    /// with LZ4 in the legacy framing (the kernel's initramfs unpacker reads
+    /// no other LZ4 framing).
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut cpio = Vec::new();
         for (ino, e) in self.entries.iter().enumerate() {
@@ -94,7 +106,7 @@ impl Ramdisk {
             w.finish()?;
         }
         cpio::newc::trailer(&mut cpio)?;
-        lz4_legacy(&cpio)
+        Ok(lz4_legacy(&cpio))
     }
 
     pub fn find(&self, name: &str) -> Option<&Entry> {
@@ -159,22 +171,36 @@ fn root_entry(name: &str, mode: u32, data: Vec<u8>) -> Entry {
     Entry { name: name.to_string(), mode, uid: 0, gid: 0, mtime: 0, nlink, dev: (0, 0), rdev: (0, 0), data }
 }
 
-fn lz4_legacy(input: &[u8]) -> Result<Vec<u8>> {
-    let mut child = Command::new("lz4")
-        .args(["-l", "-12", "--favor-decSpeed", "-c"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("run lz4 (install it, e.g. `brew install lz4`)")?;
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let input = input.to_vec();
-    let writer = std::thread::spawn(move || stdin.write_all(&input));
-    let out = child.wait_with_output().context("lz4")?;
-    writer.join().expect("lz4 writer thread").context("feed lz4")?;
-    if !out.status.success() {
-        bail!("lz4 exited with {}", out.status);
+/// Unpack LZ4's legacy framing: a magic, then each block's compressed size
+/// followed by that block, the last block short.
+fn lz4_legacy_decode(data: &[u8]) -> Result<Vec<u8>> {
+    ensure!(data.len() >= 4, "the ramdisk is shorter than its compression magic");
+    let magic = u32::from_le_bytes(data[..4].try_into().expect("four bytes"));
+    ensure!(magic == LZ4_MAGIC, "the ramdisk is compressed neither with gzip nor with LZ4 ({magic:#x})");
+    let mut at = 4;
+    let mut out = Vec::new();
+    while at < data.len() {
+        ensure!(at + 4 <= data.len(), "a compressed size runs past the end of the ramdisk");
+        let len = u32::from_le_bytes(data[at..at + 4].try_into().expect("four bytes")) as usize;
+        at += 4;
+        ensure!(at + len <= data.len(), "a compressed block runs past the end of the ramdisk");
+        let start = out.len();
+        out.resize(start + LZ4_BLOCK, 0);
+        let written = lz4_flex::block::decompress_into(&data[at..at + len], &mut out[start..]).context("lz4 block")?;
+        out.truncate(start + written);
+        at += len;
     }
-    Ok(out.stdout)
+    Ok(out)
+}
+
+fn lz4_legacy(input: &[u8]) -> Vec<u8> {
+    let mut out = LZ4_MAGIC.to_le_bytes().to_vec();
+    for block in input.chunks(LZ4_BLOCK) {
+        let compressed = lz4_flex::block::compress(block);
+        out.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&compressed);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -242,5 +268,40 @@ mod tests {
         assert_eq!((unzip.data.as_slice(), unzip.mode, unzip.gid), (b"recovery".as_slice(), S_IFLNK | 0o755, 2000));
         assert_eq!(back.entries.len(), count, "no second entry of the name");
         assert!(back.find("system/bin/ziptool").is_some(), "what it pointed to stays");
+    }
+
+    #[test]
+    fn gzip_ramdisks_are_unpacked_too() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut rd = Ramdisk { entries: Vec::new() };
+        rd.add("system/bin/recovery", 0o750, b"binary".to_vec()).unwrap();
+        let cpio = {
+            let mut cpio = Vec::new();
+            for (ino, e) in rd.entries.iter().enumerate() {
+                let mut w = NewcBuilder::new(&e.name)
+                    .ino(300_000 + ino as u32)
+                    .mode(e.mode)
+                    .uid(e.uid)
+                    .gid(e.gid)
+                    .mtime(e.mtime)
+                    .nlink(e.nlink)
+                    .dev_major(0)
+                    .dev_minor(0)
+                    .rdev_major(0)
+                    .rdev_minor(0)
+                    .write(&mut cpio, e.data.len() as u32);
+                w.write_all(&e.data).unwrap();
+                w.finish().unwrap();
+            }
+            cpio::newc::trailer(&mut cpio).unwrap();
+            cpio
+        };
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(&cpio).unwrap();
+        let compressed = gz.finish().unwrap();
+        let back = Ramdisk::decode(&compressed).unwrap();
+        assert_eq!(back.find("system/bin/recovery").unwrap().data, b"binary".as_slice());
     }
 }

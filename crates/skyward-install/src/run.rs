@@ -777,7 +777,9 @@ fn run_script(ctx: &mut Context, size: u64) -> Result<Done> {
             Ok(other) => bail!("a script waiting to be agreed to was told {other:?}"),
         }
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    // A script writes its partitions in place on a phone that is not A/B,
+    // whose one copy of each is slot A's.
+    let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
     extract_script()?;
     shell_at_sbin()?;
     let kept = hold(ctx, slot)?;

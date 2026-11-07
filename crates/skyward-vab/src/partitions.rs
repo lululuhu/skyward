@@ -84,17 +84,31 @@ fn map_and_mount(p: &Partition, devices: &[(u32, u32)], slot: Slot) -> Result<Mo
     }
 }
 
+/// Whether super's partitions carry a slot suffix. Phones that are not A/B
+/// keep one copy of each, named without one.
+fn slotted(md: &Metadata) -> bool {
+    md.partitions.iter().any(|p| p.name.ends_with("_a") || p.name.ends_with("_b"))
+}
+
 /// The slot's partitions that hold data. Copy-on-write partitions such as
 /// odm_b-cow end in -cow and stay out.
 fn slot_partitions(md: &Metadata, slot: Slot) -> Vec<&Partition> {
+    let slotted = slotted(md);
     md.partitions
         .iter()
-        .filter(|p| p.name.ends_with(slot.suffix()) && !p.extents.is_empty() && p.attributes & ATTR_DISABLED == 0)
+        .filter(|p| {
+            let of_slot = if slotted {
+                p.name.ends_with(slot.suffix())
+            } else {
+                !p.name.ends_with("_a") && !p.name.ends_with("_b")
+            };
+            of_slot && !p.extents.is_empty() && p.attributes & ATTR_DISABLED == 0
+        })
         .collect()
 }
 
 fn base(p: &Partition, slot: Slot) -> &str {
-    &p.name[..p.name.len() - slot.suffix().len()]
+    p.name.strip_suffix(slot.suffix()).unwrap_or(&p.name)
 }
 
 /// Partitions are mapped only while no update snapshot is outstanding,
@@ -237,8 +251,7 @@ pub fn map_whole(slot: Slot, base_name: &str, name: &str, readonly: bool) -> Res
     let super_dev = super_device();
     let md = skyward_lp::read(&super_dev, slot.number())?;
     let devices = block_devices(&md, &super_dev)?;
-    let full = format!("{base_name}{}", slot.suffix());
-    let p = slot_partitions(&md, slot).into_iter().find(|p| p.name == full).with_context(|| format!("super holds no {full}"))?;
+    let p = slot_partitions(&md, slot).into_iter().find(|p| base(p, slot) == base_name).with_context(|| format!("super holds no {base_name}"))?;
     let device = dm::create(name, &targets(p, &devices), readonly)?;
     Ok(Whole { name: name.into(), device, size: bytes(p) })
 }
@@ -312,11 +325,11 @@ pub fn mount_one(slot: Slot, base_name: &str) -> Result<Mounted> {
     let super_dev = super_device();
     let md = skyward_lp::read(&super_dev, slot.number())?;
     let devices = block_devices(&md, &super_dev)?;
-    let name = format!("{base_name}{}", slot.suffix());
     let p = slot_partitions(&md, slot)
         .into_iter()
-        .find(|p| p.name == name)
-        .with_context(|| format!("super holds no {name}"))?;
+        .find(|p| base(p, slot) == base_name)
+        .with_context(|| format!("super holds no {base_name}"))?;
+    let name = p.name.clone();
     let snaps = Snapshots::lock(true)?;
     let status = match &snaps {
         Some(s) if s.needed(slot)? => s.live(p)?.map(|status| (s, status)),
@@ -352,7 +365,12 @@ fn unmap(name: &str, point: &Path) -> Result<()> {
 /// unmounted: its snapshot stays mapped, for its merge to go on and for it
 /// to be mounted again.
 pub fn unmount_one(slot: Slot, base_name: &str) -> Result<()> {
-    let name = format!("{base_name}{}", slot.suffix());
+    let md = skyward_lp::read(&super_device(), slot.number())?;
+    let name = slot_partitions(&md, slot)
+        .into_iter()
+        .find(|p| base(p, slot) == base_name)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| format!("{base_name}{}", slot.suffix()));
     let point = mount_point(base_name);
     if !snapshots::is_snapshot(&name)? {
         return unmap(&name, &point);
@@ -375,7 +393,14 @@ pub fn mounted_partitions(slot: Slot) -> Result<Vec<Mounted>> {
         let name_file = entry.path().join("dm/name");
         let name = fs::read_to_string(&name_file).with_context(|| format!("read {}", name_file.display()))?;
         let name = name.trim();
-        let Some(base) = name.strip_suffix(slot.suffix()) else { continue };
+        let base = match name.strip_suffix(slot.suffix()) {
+            Some(base) => base,
+            // The other slot's partitions, and copy-on-write ones, are no
+            // partitions this slot mounts.
+            None if name.ends_with("_a") || name.ends_with("_b") => continue,
+            // A phone that is not A/B names them without a suffix.
+            None => name,
+        };
         let device = Path::new("/dev/block").join(&node);
         let mount_point = mount_point(base);
         let Some(shown) = mount::visible(&mount_point)? else { continue };

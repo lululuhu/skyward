@@ -178,7 +178,9 @@ impl SystemProps {
         }
         let props = match skyward_vab::current_slot()? {
             Some(slot) => installed_props(slot)?,
-            None => HashMap::new(),
+            // A phone that is not A/B keeps one copy of each partition, the
+            // one Skyward mounts as slot A's.
+            None => installed_props(skyward_vab::Slot::A)?,
         };
         Ok(SystemProps::Installed(props))
     }
@@ -206,7 +208,7 @@ const BOOT_PROPS: &str = "ro.boot.";
 /// they come first here too, the same in a recovery as in the system.
 pub fn installed_props(slot: Slot) -> Result<HashMap<String, String>> {
     let base = |m: &skyward_vab::Mounted| -> String {
-        m.partition.strip_suffix(slot.suffix()).expect("mounted partitions carry the slot suffix").to_string()
+        m.partition.strip_suffix(slot.suffix()).unwrap_or(&m.partition).to_string()
     };
     let mut parts = skyward_vab::mounted_partitions(slot)?;
     parts.sort_by_key(|m| PROP_ORDER.iter().position(|b| *b == base(m)).unwrap_or(PROP_ORDER.len()));

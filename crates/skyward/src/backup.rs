@@ -343,7 +343,7 @@ fn no_update() -> Result<()> {
 }
 
 fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<PathBuf> {
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
     let [boot, system, data, efs] = t.parts;
     if system {
         no_update()?;
@@ -355,7 +355,7 @@ fn backup(t: BackupTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<Pa
     let mut needed = 0;
     if boot {
         for name in BOOT {
-            let device = partition(&format!("{name}{}", slot.suffix()));
+            let device = slot_partition(name, slot);
             if device.exists() {
                 let size = skyward_block::size_bytes(&device)?;
                 plan.push((Part::Boot, name.to_string(), Source::Block(device), size));
@@ -491,7 +491,7 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     if manifest.device != t.device {
         return Err(Refusal::OtherPhone(manifest.device).into());
     }
-    let slot = skyward_vab::current_slot()?.context("not an A/B phone")?;
+    let slot = skyward_vab::current_slot()?.unwrap_or(skyward_vab::Slot::A);
     let mut items: Vec<&Item> = manifest.items.iter().filter(|i| t.parts[index(i.part)]).collect();
     ensure!(!items.is_empty(), "nothing chosen to restore is in the backup");
     items.sort_by_key(|i| RESTORE_ORDER.iter().position(|&p| p == i.part));
@@ -572,11 +572,22 @@ fn restore(t: RestoreTask, tell: &dyn Fn(Event), cancel: &AtomicBool) -> Result<
     Ok(unmade)
 }
 
+/// The partition `name` of `slot`, or its one copy on a phone that is not
+/// A/B, which names it without a slot suffix.
+fn slot_partition(name: &str, slot: Slot) -> PathBuf {
+    let slotted = partition(&format!("{name}{}", slot.suffix()));
+    if slotted.exists() {
+        slotted
+    } else {
+        partition(name)
+    }
+}
+
 /// The partition a part of a backup goes back to.
 fn target(item: &Item, slot: Slot) -> PathBuf {
     match item.part {
         Part::Efs => partition(&item.name),
-        _ => partition(&format!("{}{}", item.name, slot.suffix())),
+        _ => slot_partition(&item.name, slot),
     }
 }
 

@@ -558,9 +558,14 @@ impl DeviceConfig {
         }
         if let Some(stock) = &cfg.stock {
             let name = stock.package.rsplit('/').next().unwrap_or_default();
+            // A phone whose maker ships a block update, or whose system is
+            // built by someone else, has no full package to take the recovery
+            // partition out of; its recovery image is named as it is.
+            let package = name.ends_with(".zip") && name.contains(&stock.version);
+            let image = name.ends_with(".img");
             ensure!(
-                stock.package.starts_with("https://") && name.ends_with(".zip") && name.contains(&stock.version) && !stock.version.is_empty(),
-                "[stock] package: {} is not an HTTPS address of the full package of {}",
+                stock.package.starts_with("https://") && (package || image) && !stock.version.is_empty(),
+                "[stock] package: {} is not an HTTPS address of the full package of {} or of its recovery image",
                 stock.package,
                 stock.version
             );

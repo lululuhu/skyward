@@ -1,0 +1,39 @@
+[device]
+codename = "lemonades"
+brand = "OnePlus"
+model = "OnePlus 9R"
+# One copy of every partition, and a recovery partition of its own.
+ab = false
+soc = { hans = "骁龙®870 移动平台", hant = "驍龍®870 行動平台", en = "Snapdragon® 870 Mobile Platform" }
+os_version_prop = "ro.build.display.id"
+
+[display]
+width = 1080
+height = 2400
+density = 450
+diagonal = 6.55
+corner_radius = 120
+
+[modules]
+# ColorOS keeps its modules on vendor_dlkm and vendor; the touchscreen driver
+# is among them, as the stock LineageOS recovery this is built on loads it.
+sources = ["vendor_dlkm", "vendor", "odm"]
+
+# The persist partition, which the phone mounts at /mnt/vendor/persist and its
+# own recovery leaves unmounted. The WLAN's MAC address is there.
+[partitions]
+mounted = ["persist"]
+
+[logd]
+libraries = ["/mnt/system/system/lib64/libsysutils.so", "/mnt/system/system/lib64/libcap.so"]
+
+# The stock build the recovery is made on: LineageOS's own recovery for this
+# phone, the same kernel and init this builds on, since the Chinese system's
+# update is a block update that carries no recovery partition.
+[stock]
+version = "lineage-23.2-20261016-microG"
+package = "https://download.lineage.microg.org/lemonades/lineage-23.2-20261016-microG-lemonades-recovery.img"
+recovery = "b87e1a4a6f4215f83e2984a216d34a1cbab035fa919e638723dd66683794114a"
+
+[backup]
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]

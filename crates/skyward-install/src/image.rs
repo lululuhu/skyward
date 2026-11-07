@@ -155,9 +155,15 @@ pub fn is_skyward<R: Read + Seek>(file: &mut R) -> Result<bool> {
     holds(ramdisk, |name| name == skyward_config::ramdisk::CONFIG).context("read the ramdisk")
 }
 
-/// The partition `name` of `slot` among the links in `dir`.
+/// The partition `name` of `slot` among the links in `dir`. A phone that is
+/// not A/B keeps one copy, named without a slot suffix.
 pub fn device(dir: &Path, name: &str, slot: Slot) -> PathBuf {
-    dir.join(format!("{name}{}", slot.suffix()))
+    let slotted = dir.join(format!("{name}{}", slot.suffix()));
+    if slotted.try_exists().unwrap_or(false) {
+        slotted
+    } else {
+        dir.join(name)
+    }
 }
 
 /// The partitions `kind` fits that this phone has in both slots, among the
